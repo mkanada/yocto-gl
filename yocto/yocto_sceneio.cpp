@@ -362,7 +362,7 @@ void load_yaml(
   // parse state
   enum struct parsing_type {
     // clang-format off
-    none, camera, texture, voltexture, material, shape, subdiv, instance, environment
+    none, camera, texture, voltexture, material, shape, subdiv, environment
     // clang-format on
   };
   auto type = parsing_type::none;
@@ -417,9 +417,6 @@ void load_yaml(
       } else if (group == "subdivs") {
         type = parsing_type::subdiv;
         scene.subdivs.push_back({});
-      } else if (group == "instances") {
-        type = parsing_type::instance;
-        scene.instances.push_back({});
       } else if (group == "environments") {
         type = parsing_type::environment;
         scene.environments.push_back({});
@@ -585,6 +582,14 @@ void load_yaml(
         }
       } else if (key == "material") {
         get_yaml_ref(value, shape.material, mmap);
+      } else if (key == "frame") {
+        get_yaml_value(value, shape.frame);
+      } else if (key == "instance") {
+        get_yaml_value(value, shape.instances.emplace_back());
+      } else if (key == "lookat") {
+        auto lookat = identity3x3f;
+        get_yaml_value(value, lookat);
+        shape.frame = lookat_frame(lookat.x, lookat.y, lookat.z, true);
       } else if (key == "uri") {
         get_yaml_value(value, shape.filename);
         shape.name           = get_basename(shape.filename);
@@ -625,23 +630,6 @@ void load_yaml(
         get_yaml_ref(value, subdiv.displacement_tex, tmap);
       } else if (key == "displacement") {
         get_yaml_value(value, subdiv.displacement);
-      } else {
-        throw std::runtime_error("unknown property " + string(key));
-      }
-    } else if (type == parsing_type::instance) {
-      auto& instance = scene.instances.back();
-      if (key == "name") {
-        get_yaml_value(value, instance.name);
-      } else if (key == "uri") {
-        get_yaml_value(value, instance.name);
-      } else if (key == "frame") {
-        get_yaml_value(value, instance.frame);
-      } else if (key == "shape") {
-        get_yaml_ref(value, instance.shape, smap);
-      } else if (key == "lookat") {
-        auto lookat = identity3x3f;
-        get_yaml_value(value, lookat);
-        instance.frame = lookat_frame(lookat.x, lookat.y, lookat.z, true);
       } else {
         throw std::runtime_error("unknown property " + string(key));
       }
@@ -692,8 +680,7 @@ static void load_yaml_scene(
 }
 
 // Save yaml
-static void save_yaml(const string& filename, const yocto_scene& scene,
-    bool ply_instances = false, const string& instances_name = "") {
+static void save_yaml(const string& filename, const yocto_scene& scene) {
   // open file
   auto fs = open_file(filename, "w");
 
@@ -705,7 +692,6 @@ static void save_yaml(const string& filename, const yocto_scene& scene,
   static const auto def_material    = yocto_material{};
   static const auto def_shape       = yocto_shape{};
   static const auto def_subdiv      = yocto_subdiv{};
-  static const auto def_instance    = yocto_instance{};
   static const auto def_environment = yocto_environment{};
 
   auto yvalue = yaml_value{};
@@ -875,24 +861,6 @@ static void save_yaml(const string& filename, const yocto_scene& scene,
           make_yaml_value(subdiv.displacement));
   }
 
-  if (!ply_instances) {
-    if (!scene.instances.empty()) write_yaml_object(fs, "instances");
-    for (auto& instance : scene.instances) {
-      write_yaml_property(
-          fs, "instances", "name", true, make_yaml_value(instance.name));
-      if (instance.frame != identity3x4f)
-        write_yaml_property(
-            fs, "instances", "frame", false, make_yaml_value(instance.frame));
-      if (instance.shape >= 0)
-        write_yaml_property(fs, "instances", "shape", false,
-            make_yaml_value(scene.shapes[instance.shape].name));
-    }
-  } else {
-    if (!scene.instances.empty()) write_yaml_object(fs, "ply_instances");
-    write_yaml_property(
-        fs, "ply_instances", "filename", true, make_yaml_value(instances_name));
-  }
-
   if (!scene.environments.empty()) write_yaml_object(fs, "environments");
   for (auto& environment : scene.environments) {
     write_yaml_property(
@@ -1033,20 +1001,8 @@ void load_obj(
     if (oshape.materials.size() != 1) {
       throw std::runtime_error("missing material for " + oshape.name);
     }
-    shape.material = material_map.at(oshape.materials.at(0));
-    // make instances
-    if (oshape.instances.empty()) {
-      auto& instance = scene.instances.emplace_back();
-      instance.name  = shape.name;
-      instance.shape = (int)scene.shapes.size() - 1;
-    } else {
-      for (auto& frame : oshape.instances) {
-        auto& instance = scene.instances.emplace_back();
-        instance.name  = shape.name;
-        instance.frame = frame;
-        instance.shape = (int)scene.shapes.size() - 1;
-      }
-    }
+    shape.material  = material_map.at(oshape.materials.at(0));
+    shape.instances = oshape.instances;
   }
 
   // convert environments
@@ -1161,36 +1117,42 @@ static void save_obj(const string& filename, const yocto_scene& scene,
       } else {
         throw std::runtime_error("do not support empty shapes");
       }
-    }
-    for (auto& instance : scene.instances) {
-      obj.shapes[instance.shape].instances.push_back(instance.frame);
+      oshape.frame     = shape.frame;
+      oshape.instances = shape.instances;
     }
   } else {
-    for (auto& instance : scene.instances) {
-      auto& shape      = scene.shapes[instance.shape];
-      auto& oshape     = obj.shapes.emplace_back();
-      oshape.name      = instance.name;
-      oshape.materials = {scene.materials[shape.material].name};
-      auto positions = shape.positions, normals = shape.normals;
-      for (auto& p : positions) p = transform_point(instance.frame, p);
-      for (auto& n : normals) n = transform_normal(instance.frame, n);
-      if (!shape.triangles.empty()) {
-        add_obj_triangles(obj, oshape, shape.triangles, positions, normals,
-            shape.texcoords, {}, true);
-      } else if (!shape.quads.empty()) {
-        add_obj_quads(obj, oshape, shape.quads, positions, normals,
-            shape.texcoords, {}, true);
-      } else if (!shape.lines.empty()) {
-        add_obj_lines(obj, oshape, shape.lines, positions, normals,
-            shape.texcoords, {}, true);
-      } else if (!shape.points.empty()) {
-        add_obj_points(obj, oshape, shape.points, positions, normals,
-            shape.texcoords, {}, true);
-      } else if (!shape.quadspos.empty()) {
-        add_obj_fvquads(obj, oshape, shape.quadspos, shape.quadsnorm,
-            shape.quadstexcoord, positions, normals, shape.texcoords, {}, true);
-      } else {
-        throw std::runtime_error("do not support empty shapes");
+    static auto fixed_instances = vector<frame3f>{identity3x4f};
+    for (auto& shape : scene.shapes) {
+      auto  count     = 0;
+      auto& instances = shape.instances.empty() ? fixed_instances
+                                                : shape.instances;
+      for (auto& frame : instances) {
+        auto& oshape     = obj.shapes.emplace_back();
+        oshape.name      = shape.name + std::to_string(count++);
+        oshape.materials = {scene.materials[shape.material].name};
+        auto positions = shape.positions, normals = shape.normals;
+        for (auto& p : positions) p = transform_point(frame * shape.frame, p);
+        for (auto& n : normals)
+          n = transform_normal(frame * shape.frame, n, shape.non_rigid_frames);
+        if (!shape.triangles.empty()) {
+          add_obj_triangles(obj, oshape, shape.triangles, positions, normals,
+              shape.texcoords, {}, true);
+        } else if (!shape.quads.empty()) {
+          add_obj_quads(obj, oshape, shape.quads, positions, normals,
+              shape.texcoords, {}, true);
+        } else if (!shape.lines.empty()) {
+          add_obj_lines(obj, oshape, shape.lines, positions, normals,
+              shape.texcoords, {}, true);
+        } else if (!shape.points.empty()) {
+          add_obj_points(obj, oshape, shape.points, positions, normals,
+              shape.texcoords, {}, true);
+        } else if (!shape.quadspos.empty()) {
+          add_obj_fvquads(obj, oshape, shape.quadspos, shape.quadsnorm,
+              shape.quadstexcoord, positions, normals, shape.texcoords, {},
+              true);
+        } else {
+          throw std::runtime_error("do not support empty shapes");
+        }
       }
     }
   }
@@ -1245,13 +1207,6 @@ static void load_ply_scene(
         shape.quads, shape.quadspos, shape.quadsnorm, shape.quadstexcoord,
         shape.positions, shape.normals, shape.texcoords, shape.colors,
         shape.radius, false);
-
-    // add instance
-    auto instance  = yocto_instance{};
-    instance.name  = shape.name;
-    instance.shape = 0;
-    scene.instances.push_back(instance);
-
   } catch (const std::exception& e) {
     throw std::runtime_error("cannot load scene " + filename + "\n" + e.what());
   }
@@ -1341,6 +1296,7 @@ static void load_gltf(const string& filename, yocto_scene& scene) {
       make_safe_name(shape.name, "shape", (int)scene.shapes.size());
       shape.filename = make_safe_filename(
           "shapes/shape" + std::to_string(scene.shapes.size()));
+      shape.frame     = identity3x4f;
       shape.material  = gprim.material;
       shape.positions = gprim.positions;
       shape.normals   = gprim.normals;
@@ -1372,11 +1328,7 @@ static void load_gltf(const string& filename, yocto_scene& scene) {
     }
     if (gnode.mesh >= 0) {
       for (auto shape : shape_indices[gnode.mesh]) {
-        auto& instance = scene.instances.emplace_back();
-        instance.name  = make_safe_name(
-            scene.shapes[shape].name, "instance", (int)scene.instances.size());
-        instance.frame = gnode.frame;
-        instance.shape = shape;
+        scene.shapes[shape].instances.push_back(gnode.frame);
       }
     }
   }
@@ -1496,6 +1448,7 @@ static void load_pbrt(
       shape.name     = make_safe_name(
           get_basename(pshape.filename), "shape", (int)scene.shapes.size());
     }
+    shape.frame    = pshape.frame;
     shape.material = arealight_map.at(pshape.arealight) >= 0
                          ? arealight_map.at(pshape.arealight)
                          : material_map.at(pshape.material);
@@ -1504,15 +1457,7 @@ static void load_pbrt(
     shape.texcoords = pshape.texcoords;
     shape.triangles = pshape.triangles;
     for (auto& uv : shape.texcoords) uv.y = 1 - uv.y;
-    auto instance_id = 0;
-    for (auto& frame : pshape.instance_frames) {
-      auto& instance = scene.instances.emplace_back();
-      instance.name  = shape.name + (pshape.instance_frames.empty()
-                                           ? ""s
-                                           : std::to_string(instance_id++));
-      instance.frame = frame * pshape.frame;
-      instance.shape = (int)scene.shapes.size() - 1;
-    }
+    shape.instances = pshape.instance_frames;
   }
 
   // convert environments
@@ -1537,18 +1482,15 @@ static void load_pbrt(
   for (auto& plight : pbrt.lights) {
     auto& shape       = scene.shapes.emplace_back();
     auto& material    = scene.materials.emplace_back();
-    auto& instance    = scene.instances.emplace_back();
     shape.name        = make_safe_name("", "light", (int)scene.shapes.size());
     shape.filename    = make_safe_filename("shapes/" + shape.name + ".ply");
     shape.material    = (int)scene.materials.size() - 1;
+    shape.frame       = plight.area_frame;
     shape.triangles   = plight.area_triangles;
     shape.positions   = plight.area_positions;
     shape.normals     = plight.area_normals;
     material.name     = shape.name;
     material.emission = plight.area_emission;
-    instance.name     = shape.name;
-    instance.frame    = plight.area_frame;
-    instance.shape    = (int)scene.shapes.size() - 1;
   }
 }
 
@@ -1613,12 +1555,11 @@ static void save_pbrt(const string& filename, const yocto_scene& scene) {
   }
 
   // convert instances
-  for (auto& instance : scene.instances) {
-    auto& shape      = scene.shapes[instance.shape];
-    auto& material   = scene.materials[instance.shape];
+  for (auto& shape : scene.shapes) {
+    auto& material   = scene.materials[shape.material];
     auto& pshape     = pbrt.shapes.emplace_back();
     pshape.filename  = replace_extension(shape.filename, ".ply");
-    pshape.frame     = instance.frame;
+    pshape.frame     = shape.frame;
     pshape.material  = material.name;
     pshape.arealight = material.emission == zero3f ? ""s : material.name;
   }
@@ -1704,7 +1645,7 @@ void make_cornellbox_scene(yocto_scene& scene) {
   ceiling_shp.name        = "shapes/ceiling.obj";
   ceiling_shp.positions   = {{-1, 2, 1}, {-1, 2, -1}, {1, 2, -1}, {1, 2, 1}};
   ceiling_shp.triangles   = {{0, 1, 2}, {2, 3, 0}};
-  ceiling_shp.material      = 1;
+  ceiling_shp.material    = 1;
   auto& backwall_shp      = scene.shapes.emplace_back();
   backwall_shp.name       = "backwall";
   backwall_shp.filename   = "shapes/backwall.obj";
@@ -1716,13 +1657,13 @@ void make_cornellbox_scene(yocto_scene& scene) {
   rightwall_shp.filename  = "shapes/rightwall.obj";
   rightwall_shp.positions = {{1, 0, -1}, {1, 0, 1}, {1, 2, 1}, {1, 2, -1}};
   rightwall_shp.triangles = {{0, 1, 2}, {2, 3, 0}};
-  rightwall_shp.material = 3;
+  rightwall_shp.material  = 3;
   auto& leftwall_shp      = scene.shapes.emplace_back();
   leftwall_shp.name       = "leftwall";
   leftwall_shp.filename   = "shapes/leftwall.obj";
   leftwall_shp.positions  = {{-1, 0, 1}, {-1, 0, -1}, {-1, 2, -1}, {-1, 2, 1}};
   leftwall_shp.triangles  = {{0, 1, 2}, {2, 3, 0}};
-  leftwall_shp.material = 4;
+  leftwall_shp.material   = 4;
   auto& shortbox_shp      = scene.shapes.emplace_back();
   shortbox_shp.name       = "shortbox";
   shortbox_shp.filename   = "shapes/shortbox.obj";
@@ -1737,7 +1678,7 @@ void make_cornellbox_scene(yocto_scene& scene) {
   shortbox_shp.triangles  = {{0, 1, 2}, {2, 3, 0}, {4, 5, 6}, {6, 7, 4},
       {8, 9, 10}, {10, 11, 8}, {12, 13, 14}, {14, 15, 12}, {16, 17, 18},
       {18, 19, 16}, {20, 21, 22}, {22, 23, 20}};
-  shortbox_shp.material = 5;
+  shortbox_shp.material   = 5;
   auto& tallbox_shp       = scene.shapes.emplace_back();
   tallbox_shp.name        = "tallbox";
   tallbox_shp.filename    = "shapes/tallbox.obj";
@@ -1753,7 +1694,7 @@ void make_cornellbox_scene(yocto_scene& scene) {
   tallbox_shp.triangles   = {{0, 1, 2}, {2, 3, 0}, {4, 5, 6}, {6, 7, 4},
       {8, 9, 10}, {10, 11, 8}, {12, 13, 14}, {14, 15, 12}, {16, 17, 18},
       {18, 19, 16}, {20, 21, 22}, {22, 23, 20}};
-  tallbox_shp.material = 6;
+  tallbox_shp.material    = 6;
   auto& light_shp         = scene.shapes.emplace_back();
   light_shp.name          = "light";
   light_shp.filename      = "shapes/light.obj";
@@ -1761,14 +1702,6 @@ void make_cornellbox_scene(yocto_scene& scene) {
       {0.25, 1.99, -0.25}, {0.25, 1.99, 0.25}};
   light_shp.triangles     = {{0, 1, 2}, {2, 3, 0}};
   light_shp.material      = 7;
-  scene.instances.push_back({"floor", identity3x4f, 0});
-  scene.instances.push_back({"ceiling", identity3x4f, 1});
-  scene.instances.push_back({"backwall", identity3x4f, 2});
-  scene.instances.push_back({"rightwall", identity3x4f, 3});
-  scene.instances.push_back({"leftwall", identity3x4f, 4});
-  scene.instances.push_back({"shortbox", identity3x4f, 5});
-  scene.instances.push_back({"tallbox", identity3x4f, 6});
-  scene.instances.push_back({"light", identity3x4f, 7});
 }
 
 }  // namespace yocto

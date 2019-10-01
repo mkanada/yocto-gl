@@ -740,8 +740,7 @@ void save_ply(const string& filename, const ply_model& ply) {
                 format_values(fs, "{} ", prop.data_i32[cur[idx]++]);
                 break;
               case ply_type::i64:
-                format_values(
-                    fs, "{} ", prop.data_i64[cur[idx]++]);
+                format_values(fs, "{} ", prop.data_i64[cur[idx]++]);
                 break;
               case ply_type::u8:
                 format_values(fs, "{} ", prop.data_i8[cur[idx]++]);
@@ -753,8 +752,7 @@ void save_ply(const string& filename, const ply_model& ply) {
                 format_values(fs, "{} ", prop.data_u32[cur[idx]++]);
                 break;
               case ply_type::u64:
-                format_values(
-                    fs, "{} ", prop.data_u64[cur[idx]++]);
+                format_values(fs, "{} ", prop.data_u64[cur[idx]++]);
                 break;
               case ply_type::f32:
                 format_values(fs, "{}", prop.data_f32[cur[idx]++]);
@@ -1807,6 +1805,7 @@ void load_objx(const string& filename, obj_model& obj) {
       environment.emission_map.path = emission_path;
       parse_value(line, environment.frame);
     } else if (cmd == "i") {
+      // TODO: fixme shape frame
       auto object = ""s;
       auto frame  = identity3x4f;
       parse_value(line, object);
@@ -2126,6 +2125,7 @@ void save_objx(const string& filename, const obj_model& obj) {
   }
 
   // instances
+  // TODO: fixme shape frame
   for (auto& shape : obj.shapes) {
     for (auto& frame : shape.instances) {
       format_values(fs, "i {} {}\n", shape.name, frame);
