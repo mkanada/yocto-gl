@@ -351,7 +351,7 @@ static ray3f eval_camera(
 }
 
 // Sample camera
-static ray3f sample_camera(const trc::camera* camera, const vec2i& ij,
+ray3f sample_camera(const trc::camera* camera, const vec2i& ij,
     const vec2i& image_size, const vec2f& puv, const vec2f& luv, bool tent) {
   if (!tent) {
     auto uv = vec2f{
@@ -2247,9 +2247,7 @@ static std::pair<vec3f, bool> trace_falsecolor(const trc::scene* scene,
 }
 
 // Trace a single ray from the camera using the given algorithm.
-using sampler_func = std::pair<vec3f, bool> (*)(const trc::scene* scene,
-    const ray3f& ray, rng_state& rng, const trace_params& params);
-static sampler_func get_trace_sampler_func(const trace_params& params) {
+sampler_func get_trace_sampler_func(const trace_params& params) {
   switch (params.sampler) {
     case sampler_type::path: return trace_path;
     case sampler_type::naive: return trace_naive;
@@ -2279,10 +2277,10 @@ bool is_sampler_lit(const trace_params& params) {
 // Trace a block of samples
 vec4f trace_sample(trc::state* state, const trc::scene* scene,
     const trc::camera* camera, const vec2i& ij, const trace_params& params) {
-  auto  sampler = get_trace_sampler_func(params);
   auto& pixel   = state->pixels[ij];
   auto  ray = sample_camera(camera, ij, state->pixels.size(), rand2f(pixel.rng),
       rand2f(pixel.rng), params.tentfilter);
+  auto sampler = get_trace_sampler_func(params);
   auto [radiance, hit] = sampler(scene, ray, pixel.rng, params);
   if (!hit) {
     if (params.envhidden || scene->environments.empty()) {
@@ -2423,7 +2421,9 @@ img::image<vec4f> trace_image(const trc::scene* scene,
   init_state(state, scene, camera, params);
 
   for (auto sample = 0; sample < params.samples; sample++) {
-    if (progress_cb) progress_cb("trace image", sample, params.samples);
+    if (progress_cb) progress_cb("trace image: " 
+      + std::to_string(sample) 
+      + "/" + std::to_string(params.samples), sample, params.samples);
     if (params.noparallel) {
       for (auto j = 0; j < state->render.size().y; j++) {
         for (auto i = 0; i < state->render.size().x; i++) {
@@ -2452,7 +2452,7 @@ void trace_start(trc::state* state, const trc::scene* scene,
   init_state(state, scene, camera, params);
   state->worker = {};
   state->stop   = false;
-
+  
   // render preview
   if (progress_cb) progress_cb("trace preview", 0, params.samples);
   auto pprms = params;

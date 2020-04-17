@@ -320,7 +320,7 @@ inline void print_progress(const std::string& message, int current, int total) {
   auto n     = (int)(30 * (float)current / (float)total);
   auto bar   = "[" + pade(std::string(n, '='), 30) + "]";
   auto line  = bar + " " + mins + ":" + secs + "." + msecs + " " +
-              pade(message, 30);
+              pade(message, 70);
   printf("\r%s\r", line.c_str());
   if (current == total) printf("\n");
   fflush(stdout);

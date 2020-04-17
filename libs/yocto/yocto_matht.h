@@ -371,6 +371,12 @@ using vec1f = vec<float, 1>;
 using vec2f = vec<float, 2>;
 using vec3f = vec<float, 3>;
 using vec4f = vec<float, 4>;
+
+using vec1d = vec<double, 1>;
+using vec2d = vec<double, 2>;
+using vec3d = vec<double, 3>;
+using vec4d = vec<double, 4>;
+
 using vec1i = vec<int, 1>;
 using vec2i = vec<int, 2>;
 using vec3i = vec<int, 3>;
@@ -385,10 +391,16 @@ inline const auto zero1f = vec1f{0};
 inline const auto zero2f = vec2f{0, 0};
 inline const auto zero3f = vec3f{0, 0, 0};
 inline const auto zero4f = vec4f{0, 0, 0, 0};
+inline const auto zero1d = vec1d{0};
+inline const auto zero2d = vec2d{0, 0};
+inline const auto zero3d = vec3d{0, 0, 0};
+inline const auto zero4d = vec4d{0, 0, 0, 0};
 inline const auto zero1i = vec1i{0};
 inline const auto zero2i = vec2i{0, 0};
 inline const auto zero3i = vec3i{0, 0, 0};
 inline const auto zero4i = vec4i{0, 0, 0, 0};
+inline const auto zero1b = vec1b{0};
+inline const auto zero2b = vec2b{0, 0};
 inline const auto zero3b = vec3b{0, 0, 0};
 inline const auto zero4b = vec4b{0, 0, 0, 0};
 

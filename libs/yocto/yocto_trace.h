@@ -70,7 +70,7 @@
 #include <memory>
 
 #include "yocto_image.h"
-#include "yocto_math.h"
+#include "yocto_matht.h"
 
 #ifdef YOCTO_EMBREE
 #include <embree3/rtcore.h>
@@ -277,9 +277,17 @@ img::image<vec4f> trace_image(const trc::scene* scene,
 // Check is a sampler requires lights
 bool is_sampler_lit(const trace_params& params);
 
+using sampler_func = std::pair<vec3f, bool> (*)(const trc::scene* scene,
+    const ray3f& ray, rng_state& rng, const trace_params& params);
+
+sampler_func get_trace_sampler_func(const trace_params& params);
+
 // [experimental] Callback used to report partially computed image
 using async_callback = std::function<void(
     const img::image<vec4f>& render, int current, int total, const vec2i& ij)>;
+    
+ray3f sample_camera(const trc::camera* camera, const vec2i& ij,
+    const vec2i& image_size, const vec2f& puv, const vec2f& luv, bool tent);    
 
 // [experimental] Asynchronous interface
 struct state;

@@ -1,5 +1,5 @@
 add_library(yocto
-  yocto_math.h yocto_commonio.h yocto_common.h 
+  yocto_matht.h yocto_commonio.h yocto_common.h 
   yocto_ply.h yocto_obj.h yocto_pbrt.h 
   yocto_shape.h yocto_shape.cpp 
   yocto_image.h yocto_image.cpp
@@ -11,7 +11,12 @@ add_library(yocto
   ext/tinyexr.h ext/tinyexr.cpp
 )
 
+add_library(yocto_adp
+  font.h yocto_trace_adp.h yocto_trace_adp.cpp
+)
+
 set_target_properties(yocto PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+set_target_properties(yocto_adp PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
 
 if(UNIX AND NOT APPLE)
   find_package(Threads REQUIRED)
