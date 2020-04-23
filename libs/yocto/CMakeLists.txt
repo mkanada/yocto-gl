@@ -12,7 +12,7 @@ add_library(yocto
 )
 
 add_library(yocto_adp
-  font.h yocto_trace_adp.h yocto_trace_adp.cpp
+  yocto_trace_adp.h yocto_trace_adp.cpp
 )
 
 set_target_properties(yocto PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)

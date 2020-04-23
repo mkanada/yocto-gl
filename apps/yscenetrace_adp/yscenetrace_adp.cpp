@@ -206,23 +206,15 @@ void save_log(std::string imfilename, std::string log) {
       cli::print_fatal(ioerror);
 }
 
-void print_status(adp::state* state, std::string current_action, float curr_q, float desired_q) {
+void print_status(adp::state* state, std::string current_action, int actual, int final) {
   char buffer[255];
   auto stats = adp::statistic{};
   
   collect_statistics(stats, state);
   
-  sprintf(buffer, "tracing. spp: %8.2f, q: %4.2f, %s", stats.avg_spp, curr_q, current_action.c_str());
-  int actual = 0;
-  if (curr_q <= 0) {
-    actual = 1;
-  } else {
-    actual = curr_q * 100;
-  }
+  sprintf(buffer, "tracing. spp: %8.2f, q: %4.2f, %s", stats.avg_spp, state->curr_q, current_action.c_str());
   
-  int total = desired_q * 100;
-  
-  cli::print_progress(buffer, actual, total);    
+  cli::print_progress(buffer, actual, final);    
 }
 
 
@@ -238,7 +230,9 @@ int main(int argc, const char* argv[]) {
 
   // parse command line
   auto cli = cli::make_cli("yscntrace_adp", " Offline adaptive path tracing");
-  add_option(cli, "--quality,-q", params.desired_q, "Quality.");
+  add_option(cli, "--quality,-q", params.desired_q, "Trace by quality");
+  add_option(cli, "--spp", params.desired_spp, "Trace by spp");
+  add_option(cli, "--seconds", params.desired_seconds, "Trace by time (seconds)");
   add_option(cli, "--camera", camera_name, "Camera name.");
   add_option(cli, "--resolution,-r", params.trc_params.resolution, "Image resolution.");
   add_option(
@@ -254,8 +248,23 @@ int main(int argc, const char* argv[]) {
   add_option(cli, "--bvh", params.trc_params.bvh, "Bvh type", trc::bvh_names);
   add_option(cli, "--skyenv/--no-skyenv", add_skyenv, "Add sky envmap");
   add_option(cli, "--output-image,-o", imfilename, "Image filename");
+  add_option(cli, "--save-final-log", params.save_final_log, "Save log and control images at final");
   add_option(cli, "scene", filename, "Scene filename", true);
   parse_cli(cli, argc, argv);
+  
+  if (params.desired_spp > 0 && params.desired_seconds > 0) {
+    cli::print_info("error: cannot define time or spp at same time");
+    cli::print_info("");
+    cli::print_info(get_usage(cli));
+    exit(1);
+  }
+  
+  if (params.desired_q < 0) {
+    cli::print_info("error: quality cannot be negative");
+    cli::print_info("");
+    cli::print_info(get_usage(cli));
+    exit(1);
+  }
 
   // scene loading
   auto ioscene_guard = std::make_unique<sio::model>();
@@ -293,41 +302,38 @@ int main(int argc, const char* argv[]) {
 
   std::atomic<bool> running  = false;
   adp::state* last_state     = nullptr;
-  float       last_curr_q    = 0;
-  float       last_desired_q = 0;
   std::string last_act       = {};
   
   running.store(true);
   
-  cli::print_progress("tracing...", 0, 100);
-  
-  auto print_state = [&last_state, &last_curr_q, &last_desired_q, &last_act]
-    (adp::state* state, std::string current_action, float curr_q, float desired_q) {
+  auto progress_cb = [&last_state, &last_act]
+    (adp::state* state, std::string current_action, int actual, int max) {
     
       last_state     = state;
-      last_curr_q    = curr_q;
-      last_desired_q = desired_q;
       last_act       = current_action;
     
-      print_status(last_state, last_act, last_curr_q, last_desired_q);
+      print_status(last_state, last_act, actual, max);
   };
   
-  std::thread([&last_state, &last_curr_q, &last_desired_q, &last_act, &running]() {
+  std::thread([&last_state, &last_act, &running, &params]() {
     while(true) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+      std::this_thread::sleep_for(std::chrono::milliseconds(1000));      
       if (running.load() == false) {
         break;
       }
       if (last_state != nullptr) {
-        print_status(last_state, last_act, last_curr_q, last_desired_q);
+        int actual = get_actual_progress(last_state, params);
+        int max   = get_max_progress(params);
+        print_status(last_state, last_act, actual, max);
       }
     }
   }).detach();
 
   // render
-  auto render = adp::trace_image(nullptr, scene, camera, params, print_state,
-      [save_batch, imfilename](const adp::state* state, float curr_q, float desired_q) {
-        if (!save_batch) return;
+  auto render = adp::trace_image(nullptr, scene, camera, params, progress_cb,
+      [save_batch, imfilename, &params](const adp::state* state, float curr_q, float desired_q) {
+        if (curr_q != desired_q && !save_batch) return;
+        if (curr_q == desired_q && !params.save_final_log) return;
                                  
         adp::statistic stat = {};
         

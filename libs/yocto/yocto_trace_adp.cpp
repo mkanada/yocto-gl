@@ -91,7 +91,7 @@ void init_state(state* state, const trc::scene* scene,
           : vec2i{
                 (int)round(params.resolution * camera->film.x / camera->film.y),
                 params.resolution};
-  if (!state->stop) state->start_time = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+  if (!state->stop) state->start_time = std::chrono::system_clock::now();
   if (!state->stop) state->pixels.assign(image_size, pixel{});
   if (!state->stop) state->render.assign(image_size, zero4f);
   if (!state->stop) state->odd_render.assign(image_size, zero4f);
@@ -101,6 +101,35 @@ void init_state(state* state, const trc::scene* scene,
     if (state->stop) break;
   }
 }  
+
+bool checkEnd(state* state, const adp_params& params) {
+  if (state->stop) {
+    return true;
+  }
+  
+  if (params.desired_spp > 0) {
+    auto img_size = state->render.size().x * state->render.size().y;
+    auto image_spp = state->sample_count / img_size;
+    if (image_spp >= params.desired_spp) {
+      return true;
+    }
+  }
+  
+  if (params.desired_seconds > 0) {
+    auto elapsed = std::chrono::system_clock::now() - state->start_time;
+    auto seconds = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
+    if (seconds >= params.desired_seconds) {
+      return true;
+    }
+  }
+  
+  // only check quality if not checking time or spp
+  if(params.desired_spp == 0 && params.desired_seconds == 0 && state->min_q >= params.desired_q) {
+    return true;
+  }
+  
+  return false;
+}
   
 // Trace a block of samples
 void trace_sample(state* state, const trc::scene* scene,
@@ -108,19 +137,22 @@ void trace_sample(state* state, const trc::scene* scene,
     const adp_params& params) {
   auto& pixel   = state->pixels[ij];
   
-  int samples = num_samples;
+  auto sampler = trc::get_trace_sampler_func(params.trc_params);
   
+  int samples = num_samples;
   if ((pixel.actual.samples + num_samples) > params.max_samples) {
     samples = params.max_samples - pixel.actual.samples;
   }
   
   for(auto s = 0; s < samples; s++) {
-    auto sampler = trc::get_trace_sampler_func(params.trc_params);
     
     if (!state->stop.load()) {
+      auto start = std::chrono::steady_clock::now();
       auto  ray = trc::sample_camera(camera, ij, state->pixels.size(), rand2f(pixel.rng),
         rand2f(pixel.rng), params.trc_params.tentfilter);
       auto [radiance, hit] = sampler(scene, ray, pixel.rng, params.trc_params);
+      pixel.time_in_sample += (std::chrono::steady_clock::now() - start).count();      
+      state->sample_count++;
     
       if (!hit) {
         if (params.trc_params.envhidden || scene->environments.empty()) {
@@ -149,7 +181,7 @@ void trace_sample(state* state, const trc::scene* scene,
       }
     }
     
-    if (state->stop.load()) {
+    if (checkEnd(state, params)) {
       return;
     }
   }
@@ -193,13 +225,13 @@ void trace_until_quality(state* state, const trc::scene* scene,
   auto& pixel   = state->pixels[ij];
   
   trace_sample(state, scene, camera, ij, params.sample_step, params);
-  if (state->stop.load()) {
+  if (checkEnd(state, params)) {
     return;
   }
   
   while(pixel.q < q) {
     trace_sample(state, scene, camera, ij, params.sample_step, params);
-    if (state->stop.load()) {
+    if (checkEnd(state, params)) {
       return;
     }
   }    
@@ -220,7 +252,7 @@ void trace_by_budget_or_q_below(state* state, const trc::scene* scene,
   int sample_max = pixel.actual.samples + pixel.sample_budget;
   while (pixel.actual.samples < sample_max && pixel.q >= step_q) {
     trace_sample(state, scene, camera, ij, params.sample_step, params);
-    if (state->stop.load()) {
+    if (checkEnd(state, params)) {
       return;
     }
   }    
@@ -280,7 +312,8 @@ std::vector<vec2i> all_image_ij(state* state) {
 }
 
 template <typename Func>
-inline void parallel_pixels_in_list(const state* state_ptr, const std::vector<vec2i>& ij_list, Func&& func) {
+inline void parallel_pixels_in_list(state* state_ptr, const adp_params& params, 
+                                    const std::vector<vec2i>& ij_list, Func&& func) {
   auto  nthreads     = std::thread::hardware_concurrency();
   auto  futures      = std::vector<std::future<void>>(nthreads);
   std::atomic<int> next_idx(0);
@@ -294,9 +327,8 @@ inline void parallel_pixels_in_list(const state* state_ptr, const std::vector<ve
       }
       
       futures.emplace_back(
-          std::async(std::launch::async, [state_ptr, &next_idx, &ij_list, &func]() {
-            while(true) {
-              if (state_ptr->stop) break;
+          std::async(std::launch::async, [state_ptr, params, &next_idx, &ij_list, &func]() {
+            while(!checkEnd(state_ptr, params)) {
               auto idx = next_idx.fetch_add(1);
               if (idx >= ij_list.size()) break;
               func(ij_list[idx]);
@@ -310,19 +342,17 @@ inline void parallel_pixels_in_list(const state* state_ptr, const std::vector<ve
 void collect_statistics(statistic& stat, const state* state) {
   auto size = state->render.size();
   
-  int    samples     = 0;
   int    pixels      = 0;
   float  min_q       = std::numeric_limits<float>::max();
   float  max_q       = -std::numeric_limits<float>::max();
   int    min_spp     = std::numeric_limits<int>::max();
   double avg_spp     = 0;
   int    max_spp     = 0;
-  
+    
   for(auto i = 0; i < size.x; i++) {
     for(auto j = 0; j < size.y; j++) {
       auto& pixel = state->pixels[{i,j}];
       
-      samples += pixel.actual.samples;
       pixels++;
       
       if (pixel.q < min_q) {
@@ -340,16 +370,12 @@ void collect_statistics(statistic& stat, const state* state) {
       if (pixel.actual.samples > max_spp) {
         max_spp = pixel.actual.samples;
       }
-      
-      if (state->stop.load()) {
-        return;
-      }
     }
   }
   
-  avg_spp = (double) samples / (double) pixels;
+  avg_spp = double(state->sample_count) / double(pixels);
   
-  stat.samples        = samples;
+  stat.samples        = state->sample_count;
   stat.pixels         = pixels;
   stat.min_q          = min_q;
   stat.max_q          = max_q;
@@ -362,8 +388,7 @@ void collect_statistics(statistic& stat, const state* state) {
     return std::string(std::max(0, n - (int)str.size()), '0') + str;
   };
   
-  auto elapsed = std::chrono::high_resolution_clock::now().time_since_epoch().count() - state->start_time;
-  elapsed /= 1000000;  // millisecs
+  auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - state->start_time).count();
   auto mins  = pad(std::to_string(elapsed / 60000), 2);
   auto secs  = pad(std::to_string((elapsed % 60000) / 1000), 2);
   auto msecs = pad(std::to_string((elapsed % 60000) % 1000), 3);
@@ -388,7 +413,7 @@ img::image<vec4f> trace_image(state* state_ptr, const trc::scene* scene, const t
 
   std::vector<sample_spread> spread_vec;
   float step_q  =  0.0f;
-  state_ptr->curr_q = -1.0f;
+  state_ptr->curr_q = -2.0f;
   
   
   // Somewhat expensive actions.
@@ -398,23 +423,21 @@ img::image<vec4f> trace_image(state* state_ptr, const trc::scene* scene, const t
   
   vec2i size = state_ptr->render.size();
 
-  if (progress_cb) progress_cb(state_ptr, "initial samples", state_ptr->curr_q, params.desired_q);
-
-  // initial samples
-  if (state_ptr->stop) return state_ptr->render;
+  if (progress_cb) progress_cb(state_ptr, "initial samples", get_actual_progress(state_ptr, params), get_max_progress(params));
+  
+  state_ptr->curr_q = -1.0f;
 
   for(auto sampled = 0; sampled < params.min_samples; sampled += params.sample_step) {
-    parallel_pixels_in_list(state_ptr, all_image_ij(state_ptr), [state_ptr, scene, camera, &params](const vec2i& ij) {
-        if (!state_ptr->stop) trace_sample(state_ptr, scene, camera, ij, params.sample_step, params);
+    parallel_pixels_in_list(state_ptr, params, all_image_ij(state_ptr), 
+                            [state_ptr, scene, camera, &params](const vec2i& ij) {
+        trace_sample(state_ptr, scene, camera, ij, params.sample_step, params);
     });
   }
   
   
   if (batch_cb) batch_cb(state_ptr, state_ptr->curr_q, params.desired_q);
   float next_batch = state_ptr->curr_q + params.batch_step;
-  while (state_ptr->min_q < params.desired_q) {
-    if (state_ptr->stop) return state_ptr->render;
-    
+  while (!checkEnd(state_ptr, params)) {
     // select pixels that are below the actual quality step.
     state_ptr->ij_by_q.clear();    
     for(int j = 0; j < size.y; j++) {
@@ -424,16 +447,16 @@ img::image<vec4f> trace_image(state* state_ptr, const trc::scene* scene, const t
         if (pixel.q < step_q) {
           state_ptr->ij_by_q.push_back({i, j});
         }
-        
-        if (state_ptr->stop) return state_ptr->render;
-        
       }      
     }
     
     // trace samples for each pixel until it reaches the actual quality step.
-    if (progress_cb) progress_cb(state_ptr, "samples by quality", state_ptr->curr_q, params.desired_q);
-    parallel_pixels_in_list(state_ptr, state_ptr->ij_by_q, [state_ptr, scene, camera, &params, step_q](const vec2i& ij) {
-              trace_until_quality(state_ptr, scene, camera, ij, params, step_q);
+    if (progress_cb) progress_cb(state_ptr, "samples by quality", 
+                                 get_actual_progress(state_ptr, params), 
+                                 get_max_progress(params));
+    parallel_pixels_in_list(state_ptr, params, state_ptr->ij_by_q, 
+                            [state_ptr, scene, camera, &params, step_q](const vec2i& ij) {
+          trace_until_quality(state_ptr, scene, camera, ij, params, step_q);
     });
 
     // here is supposed that every pixel in image has quality > step_q
@@ -456,8 +479,6 @@ img::image<vec4f> trace_image(state* state_ptr, const trc::scene* scene, const t
             pix_neighbor.sample_budget = ((float) pixel.actual.samples / div) - pix_neighbor.actual.samples;
           }
         }
-        
-        if (state_ptr->stop) return state_ptr->render;        
       }
     }
     
@@ -468,16 +489,17 @@ img::image<vec4f> trace_image(state* state_ptr, const trc::scene* scene, const t
         if (pixel.sample_budget > 0) {
           state_ptr->ij_by_proximity.push_back({i, j});
         }
-        
-        if (state_ptr->stop) return state_ptr->render;
       }
     }
     
     
     // trace samples for each pixel near pixels sampled by quality
-    if (progress_cb) progress_cb(state_ptr, "samples by proximity", state_ptr->curr_q, params.desired_q);
-    parallel_pixels_in_list(state_ptr, state_ptr->ij_by_proximity, [state_ptr, scene, camera, &params](const vec2i& ij) {
-            trace_by_budget(state_ptr, scene, camera, ij, params);
+    if (progress_cb) progress_cb(state_ptr, "samples by proximity",
+                                 get_actual_progress(state_ptr, params), 
+                                 get_max_progress(params));    
+    parallel_pixels_in_list(state_ptr, params, state_ptr->ij_by_proximity, 
+                            [state_ptr, scene, camera, &params](const vec2i& ij) {
+        trace_by_budget(state_ptr, scene, camera, ij, params);
     });    
 
     // collect important statistis..
@@ -489,8 +511,6 @@ img::image<vec4f> trace_image(state* state_ptr, const trc::scene* scene, const t
         if (tmp_min_q > pixel.q) {
           tmp_min_q = pixel.q;
         }
-        
-        if (state_ptr->stop) return state_ptr->render;
       }
     }
     
@@ -505,16 +525,20 @@ img::image<vec4f> trace_image(state* state_ptr, const trc::scene* scene, const t
       step_q += params.step_q;
       create_sample_spread(spread_vec, step_q);
       
-      if (step_q > params.desired_q) {
+      if (params.desired_seconds == 0 
+        && params.desired_spp == 0 
+        && params.desired_q > params.desired_q) {
         step_q = params.desired_q;
       }
     }
   }
   
-  if (!state_ptr->stop.load() && progress_cb) {
-    progress_cb(state_ptr, "samples by proximity", state_ptr->curr_q, params.desired_q);
+  if (!state_ptr->stop && progress_cb) {
+    progress_cb(state_ptr, "samples by proximity", get_max_progress(params), 
+                                                   get_max_progress(params));
   }
-  if (!state_ptr->stop.load() && batch_cb) batch_cb(state_ptr, state_ptr->curr_q, params.desired_q);
+  
+  if (!state_ptr->stop && batch_cb) batch_cb(state_ptr, params.desired_q, params.desired_q);
   
   return state_ptr->render;
 }
@@ -535,6 +559,46 @@ img::image<vec4b> sample_density_img(const state* state, statistic& stat) {
 
   return img;
 }
+
+img::image<vec4b> time_density_img(const state* state) {
+  img::image<vec4b> img = {};
+  img.assign({state->render.size().x, state->render.size().y}, math::vec4b{0, 0, 0, 255});
+
+  double min_time = 0;
+  double max_time = 0;
+  
+  for(auto i = 0; i < state->render.size().x; i++) {
+    for(auto j = 0; j < state->render.size().y; j++) {
+      auto& px = state->pixels[{i,j}];
+      if (px.actual.samples > 0) {
+        double time = double(px.time_in_sample) / double(px.actual.samples);
+        if (min_time == 0) min_time = time;
+        if (max_time == 0) max_time = time;
+        if (time > max_time) max_time = time;      
+        if (time < min_time) min_time = time;
+      }
+    }
+  }
+  
+  double step = 255 / sqrt(max_time - min_time);
+  
+  for(auto i = 0; i < state->render.size().x; i++) {
+    for(auto j = 0; j < state->render.size().y; j++) {
+      auto& px = state->pixels[{i,j}];
+
+      if (px.actual.samples > 0) {      
+        double time = double(px.time_in_sample) / double(px.actual.samples);
+        byte  p = byte(sqrt((time - min_time) * step));
+        img[{i,j}] = vec4b{p, p, p, 255};
+      } else {
+        img[{i,j}] = vec4b{0, 0, 0, 255};
+      }
+    }
+  }
+
+  return img;
+}
+
 
 img::image<vec4b> q_img(const state* state) {
   img::image<vec4b> img = {};

@@ -79,10 +79,12 @@ struct app_state {
 
   // status
   std::atomic<float> progress = 0;
-  bool          show_samples  = false;
-  bool          show_image    = true;
-  bool            highlight_q = false;
-  bool         highlight_prox = false;
+  bool               show_image       = true;
+  bool               show_samples     = false;
+  bool               show_sample_time = false;
+  bool               show_q_image     = false;
+  bool               highlight_q      = false;
+  bool               highlight_prox   = false;
 
   ~app_state() {
     if (render_state) {
@@ -257,8 +259,8 @@ void reset_display(app_state* app) {
   app->display_thread = std::async(std::launch::async, [app]() {
     while(!app->render_state->stop) {
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      adp::collect_statistics(app->stats, app->render_state);          
       if (app && !app->render_state->stop) {
-        adp::collect_statistics(app->stats, app->render_state);          
         if (app->show_image) {
           app->render  = app->render_state->render;
           app->display = tonemap_image(app->render, app->exposure);
@@ -266,6 +268,13 @@ void reset_display(app_state* app) {
         if (app->show_samples) {
           app->display = img::byte_to_float(adp::sample_density_img(app->render_state, app->stats));
         }
+        if (app->show_sample_time) {
+          app->display = img::byte_to_float(adp::time_density_img(app->render_state));
+        }
+        if (app->show_q_image) {
+          app->display = img::byte_to_float(adp::q_img(app->render_state));
+        }
+        
         if (app->highlight_prox) {
           for(auto ij : app->render_state->ij_by_proximity) {
             app->display[ij] = { 1, 0, 0, 1 };
@@ -380,11 +389,34 @@ int main(int argc, const char* argv[]) {
     draw_label(win, "desired q", std::to_string(app->params.desired_q));
     
     if (draw_checkbox(win, "show image", app->show_image)) {
-      app->show_samples = !app->show_samples;
+      if (app->show_image) {
+        app->show_samples     = false;
+        app->show_sample_time = false;
+        app->show_q_image     = false;
+      }
     }
     if (draw_checkbox(win, "show samples", app->show_samples)) {
-      app->show_image = !app->show_image;
+      if (app->show_samples) {
+        app->show_image       = false;
+        app->show_sample_time = false;        
+        app->show_q_image     = false;
+      }
     }
+    if (draw_checkbox(win, "show sample time", app->show_sample_time)) {
+      if (app->show_sample_time) {
+        app->show_image       = false;
+        app->show_samples     = false;
+        app->show_q_image     = false;
+      }
+    }
+    if (draw_checkbox(win, "show q image", app->show_q_image)) {
+      if (app->show_q_image) {
+        app->show_image       = false;
+        app->show_samples     = false;
+        app->show_sample_time = false;
+      }
+    }
+    
     draw_checkbox(win, "show samples by prox", app->highlight_prox);    
     draw_checkbox(win, "show samples by q", app->highlight_q);    
   };

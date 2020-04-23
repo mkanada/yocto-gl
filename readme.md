@@ -1,131 +1,62 @@
-# Yocto/GL: Tiny C++ Libraries for Data-Oriented Physically-based Graphics
+# Simple advances on Yocto/GL
 
-![windows build badge](https://github.com/xelatihy/yocto-gl/workflows/windows-build/badge.svg)
-![macos build badge](https://github.com/xelatihy/yocto-gl/workflows/macos-build/badge.svg)
-![ubuntu build badge](https://github.com/xelatihy/yocto-gl/workflows/ubuntu-build/badge.svg)
+This project is a simple modification to add adaptive sampling in Yocto/GL path tracer. Simply put, the integrator put samples where it is more important.
 
-Yocto/GL is a collection of small C++17 libraries for building
-physically-based graphics algorithms released under the MIT license.
-Yocto/GL is written in a deliberatly data-oriented style for ease of
-development and use.
-Yocto/GL is split into small libraries to make code navigation easier.
-See each header file for documentation.
+Just for comparison, take a look at the image below.
 
-- `yocto/yocto_math.{h}`: fixed-size vectors, matrices, rigid frames, rays,
-   bounding boxes, transforms, random number generation, color and geometry
-   functions, Perlin noise, shading and integration utilities
-- `yocto/yocto_shape.{h,cpp}`:  various utilities for manipulating
-   triangle meshes, quads meshes and line sets, computation of normals and
-   tangents, linear and Catmull-Clark subdivision, mesh loading and saving,
-   procedural shapes generation, ray intersection and closest point queries of
-   triangle meshes, quads meshes, line sets and instances scenes using a
-   two-level bounding volume hierarchy
-- `yocto/yocto_image.{h,cpp}`: simple image data type, image resizing,
-   tonemapping, color correction, image loading and saving,
-   procedural images, procedural sun-sky, advanced color conversion utilities
-- `yocto/yocto_trace.{h,cpp}`: path tracing of surfaces and hairs supporting
-   area and environment illumination, microfacet GGX and subsurface scattering,
-   multiple importance sampling
-- `yocto/yocto_sceneio.{h,cpp}`: scene loading and saving of Ply/Obj/Pbrt/glTF 
-   and a custom and scalable Json format
-- `yocto/yocto_ply.h`: parsing and writing for Ply format
-- `yocto/yocto_obj.h`: parsing and writing for Obj format
-- `yocto/yocto_pbrt.h`: parsing and writing for Pbrt format
-- `yocto/yocto_commonio.h`: printing utilities, file io utilities,
-  command line parsing
-- `yocto/yocto_common.h`: container, iterators and concurrency utilities
+First, the 'features1' sampled with 1024 samples in the default sampler:
 
-You can see Yocto/GL in action in the following applications written to
-test the library:
+![features1](images/features-1-no-adp-1024-spp.png)
 
-- `apps/yscenetrace.cpp`:   command-line path-tracer
-- `apps/ysceneitrace.cpp`:  interactive path-tracer
-- `apps/ysceneitraces.cpp`: simpler version of `apps/ysceneitrace.cpp` for demos
-- `apps/ysceneproc.cpp`: command-line scene manipulation and conversion
-- `apps/yshapeproc.cpp`: command-line mesh manipulation and conversion
-- `apps/yimageview.cpp`: Hdr/Ldr image viewer with tonemapping and color grading
-- `apps/yimageviews.cpp`: simpler version of `apps/yimageview.cpp` for demos
-- `apps/yimageproc.cpp`: command-line image manipulation
-- `apps/ysceneview.cpp`: simple OpenGL viewer
+Now, the same image, sampled with the adaptive sampler in same time (477 seconds in my computer):
 
-Here are some test images rendered with the path tracer. More images are
-included in the [project site](https://xelatihy.github.io/yocto-gl/).
+![features1 adaptive sampler](images/features-1-477-seconds.png)
 
-![Example materials: matte, plastic, metal, glass, subsurface, normal mapping](images/features1.png)
+Note how better the refraction looks in the red ball. And the scattering is more smooth in the green bunny.
 
-![Example shapes: procedural shapes, Catmull-Clark subdivision, hairs, displacement mapping](images/features2.png)
+And here, the interesting sample density image:
 
-![Image rendered with Yocto/GL path tracer. Model by Disney Animation Studios.](images/island.png)
+![features1 sample density](images/features-1-477-seconds.spl.500-500.png)
 
-## Design Considerations
+The areas with 'pure black', the pixels has 32 samples. At the brightest areas, the image has more than 65k samples!
 
-Yocto/GL follows a "data-oriented programming model" that makes data explicit.
-Data is stored in simple structs and accessed with free functions or directly.
-All data is public, so we make no attempt at encapsulation.
-Most objects is Yocto/GL have value semantic, while large data structures 
-use reference semnatic with strict ownership. This means that everything 
-can be trivially serialized and there is no need for memory management.
+The main idea is based in  paper [A Hierarchical Automatic Stopping Condition for Monte Carlo Global Illumination](http://jo.dreggn.org/home/2009_stopping.pdf) from where I get the pixel error estimation. Basically, the samples are put around the worst pixels measured using the formula describe in the paper. (Actually, '-log2(pixel error)', since I think that 'q 3' is more meaningful than error 0.125, and is easier to understand). The process is repeated again and again until all pixels reach a specific quality, or the time limit or spp limit is reached.
 
-We do this since this makes Yocto/GL easier to extend and quicker to learn,
-with a more explicit data flow that is easier when writing parallel code.
-Since Yocto/GL is mainly used for research and teaching,
-explicit data is both more hackable and easier to understand.
+## New programs
 
-In terms of code style we prefer a functional approach rather than an
-object oriented one, favoring free functions to class methods. All functions
-and data are defined in sibling namespaces contained in the `yocto` namespace 
-so libraries can call all others, but have to do so explicitly. 
+Aside a few modifications to the Yocto/GL library, all the idea is implemented in a new library called 'yocto_trace_adp' and in the program 'yscenetrace_adp'. This program has this specific options:
 
-The use of templates in Yocto was the reason for many refactorings, going
-from no template to heavy template use. At this point, Yocto uses some templates 
-for readability. In the future, we will increase the use of templates in math 
-code, while keeping many APIs explicitly typed.
+- '-q <float>': Sample the image up to a specific quality (see below images comparing) the quality). This may be the default option. Set the quality and forget. Pratical values are between 4-6, and, and fractional values like '4.2'. Below 3.5, the image is too noisy. Above 6, too much effort for little improvement.
+- '--seconds <integer>': Sample the image for a specified time. Great for comparison with others path tracers.
+- '--spp <integer>': Sample the image up to a specific sample per pixel.
+- '--save-batch': This option, that already exists in original 'yscenetrace' gets a new meaning. It saves the current 'q', 'spl' and 'actual' images as the image reaches a integer quality. 'spl' and 'actual' images needs no explanation. 'q' image is what the tracer 'sees' to decide what regions needs more samples. Dark areas needs more samples. Bright areas no.
 
-We do not use exception for error repoting, but only to report "programmers"
-errors. For example, IO operations use boolean flags and error strings for
-human readable errors, while exceptions are used when preconditions or 
-postconditions are violatd in functions.
+## Quality comparison
 
-The current version of the library (2.x) is a major refacting of the previous 
-library versions (1.x) in three main aspects. First, we now allow the use of 
-reference semantric via pointers and adopt it for all large objects, while 
-keeping value semantic for all others. We did this to avoid erroneous copies
-that cannot detected and avoided at compile time. Second, we had trouble 
-interacting with C libraries that mostly use reference semantic. Third, we
-reduce the use of exceptions, again for better intergration with external code.
+Using 'features1' image as base, see the quality increasing below. Note that de noise is nearly equal in whole image, not in specific areas.
 
-## Credits
+#### -q 0
+![quality 0](images/features-1-quality-comparison.actual.000-700.png)
 
-Main contributors:
+#### -q 1
+![quality 1](images/features-1-quality-comparison.actual.100-700.png)
 
-- Fabio Pellacini (lead developer): [web](http://pellacini.di.uniroma1.it), [github](https://github.com/xelatihy)
-- Edoardo Carra: [github](https://github.com/edoardocarra)
-- Giacomo Nazzaro: [github](https://github.com/giacomonazzaro)
+#### -q 2
+![quality 2](images/features-1-quality-comparison.actual.200-700.png)
 
-This library includes code from the [PCG random number generator](http://www.pcg-random.org),
-boost `hash_combine`, and public domain code from `github.com/sgorsten/linalg`,
-`gist.github.com/badboy/6267743` and `github.com/nothings/stb_perlin.h`.
-Other external libraries are included with their own license.
+#### -q 3
+![quality 3](images/features-1-quality-comparison.actual.300-700.png)
 
-## Compilation
+#### -q 4
+![quality 4](images/features-1-quality-comparison.actual.400-700.png)
 
-This library requires a C++17 compiler and is know to compiled on
-OsX (Xcode >= 10), Windows (MSVC 2019) and Linux (gcc >= 7, clang >= 4).
+#### -q 5
+![quality 5](images/features-1-quality-comparison.actual.500-700.png)
 
-You can build the example applications using CMake with
-    `mkdir build; cd build; cmake ..; cmake --build`
+#### -q 6
+![quality 6](images/features-1-quality-comparison.actual.600-700.png)
 
-Yocto/GL depends on `stb_image.h`, `stb_image_write.h`, `stb_image_resize.h` and
-`tinyexr.h` for image loading, saving and resizing,  `cgltf.h` and `json.hpp`
-for glTF and JSON support, and `filesystem.hpp` to support C++17 filesystem API 
-when missing. All dependencies are included in the distribution.
 
-We optionally support building OpenGL demos, which are handled by including
-glad, GLFW, ImGui as dependecies in apps. OpenGL support might eventually
-become part of the Yocto/GL libraries. OpenGL support is enabled by defining
-the cmake option `YOCTO_OPENGL` and contained in the `yocto_gui` library.
+## Next steps
 
-Finally, we optionally support the use of Intel's Embree for ray casting.
-At this point, we rely pon prebuilt binaries distributed by Intel.
-See the main CMake file for how to link to it. Embree support is enabled by
-defining the cmake option `YOCTO_EMBREE`.
+A simplified 'Gradient-Domain Path Trace', as described in section 2.3 of paper [A Survey on Gradient-Domain Rendering](https://www.google.com/url?sa=t&rct=j&q=&esrc=s&source=web&cd=2&cad=rja&uact=8&ved=2ahUKEwjUhpWvkv3oAhUIJ7kGHagfB0EQFjABegQIMBAB&url=https%3A%2F%2Fwww.researchgate.net%2Fpublication%2F333663509_A_Survey_on_Gradient-Domain_Rendering&usg=AOvVaw3iuxfB5Ijvx7fC2nvLrbmz) with some type of adaptive sampling.

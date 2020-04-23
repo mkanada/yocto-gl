@@ -109,11 +109,12 @@ struct trace_info {
 };
 
 struct pixel {
-  trace_info actual        = {};
-  trace_info odd           = {};
-  rng_state  rng           = {};
-  double     q             = -1.0f;
-  int        sample_budget = 0;
+  trace_info actual         = {};
+  trace_info odd            = {};
+  rng_state  rng            = {};
+  double     q              = -1.0f;
+  int        sample_budget  = 0;
+  long       time_in_sample = 0;
 };
 
 struct statistic {
@@ -127,34 +128,39 @@ struct statistic {
   std::string stat_text = "";
 };
 
+using time_point = std::chrono::time_point<std::chrono::system_clock, std::chrono::duration<long, std::ratio<1, 1000000000>>>;
+
 // [experimental] Asynchronous state
 struct state {
-  img::image<vec4f>      render          = {};
-  img::image<vec4f>      odd_render      = {};
-  img::image<pixel>      pixels          = {};
-  float                  min_q           = -1.0f;
-  float                  curr_q          = -1.0f;
-  int64_t                start_time      = 0;
-  std::vector<vec2i>     ij_by_q         = {};
-  std::vector<vec2i>     ij_by_proximity = {};
-  std::atomic<bool>      stop            = {};
-  std::future<void>      worker          = {};  
+  img::image<vec4f>  render          = {};
+  img::image<vec4f>  odd_render      = {};
+  img::image<pixel>  pixels          = {};
+  float              min_q           = -1.0f;
+  float              curr_q          = -1.0f;
+  time_point         start_time      = {};
+  long               sample_count    = 0;
+  std::vector<vec2i> ij_by_q         = {};
+  std::vector<vec2i> ij_by_proximity = {};
+  std::atomic<bool>  stop            = {};
+  std::future<void>  worker          = {};  
 };
   
 struct adp_params {
-  trc::trace_params trc_params  = {};
-  int               min_samples = 32;
-  int               max_samples = 262144;
-  int               sample_step = 8;
-  int               spread_step = 2;
-  float             desired_q   = 5.0f;
-  float             step_q      = 1.0/4.0;
-  float             batch_step  = 1;
+  trc::trace_params trc_params      = {};
+  int               min_samples     = 32;
+  int               max_samples     = 262144;
+  int               sample_step     = 8;
+  float             desired_q       = 5.0f;
+  int               desired_spp     = 0;
+  int               desired_seconds = 0;
+  float             step_q          = 1.0/4.0;
+  float             batch_step      = 1;
+  bool              save_final_log  = false;
 };
 
 
 using batch_callback = std::function<void(state*, float curr_q, float desired_q)>;
-using progress_callback = std::function<void(state*, std::string msg, float curr_q, float desired_q)>;    
+using progress_callback = std::function<void(state*, std::string msg, int actual, int final)>;    
     
 img::image<vec4f> trace_image(state* state, const trc::scene* scene,
     const trc::camera* camera, const adp_params& params,
@@ -165,17 +171,69 @@ img::image<vec4f> trace_image(state* state, const trc::scene* scene,
 inline std::string format_q_step(float current_q, float final_q) {
   char buffer[256];
   
-  if (current_q >= 0) {
-    sprintf(buffer, "%03d-%03d", (int) (current_q * 100.0f), (int) (final_q * 100.0f));
+  if (final_q > 0) {
+    if (current_q >= 0) {
+      sprintf(buffer, "%03d-%03d", (int) (current_q * 100.0f), (int) (final_q * 100.0f));
+    } else {
+      sprintf(buffer, "----%03d", (int) (final_q * 100.0f));
+    }
   } else {
-    sprintf(buffer, "----%03d", (int) (final_q * 100.0f));
+      sprintf(buffer, "----%03d", (int) (final_q * 100.0f));
   }
   
   return buffer;
 }
 
+inline int get_max_progress(const adp_params& params) {
+  if (params.desired_seconds > 0) {
+    return params.desired_seconds * 1000;
+  }
+  if (params.desired_spp > 0) {
+    return params.desired_spp * 1000;
+  }
+  if (params.desired_q > 0) {
+    return params.desired_q * 1000;
+  }
+  return 100;
+}
+
+inline int get_actual_progress(const state* state, const adp_params& params) {
+  if (state->curr_q == -2) {
+    // first status;
+    return 0;
+  }
+  
+  if (params.desired_seconds == 0 && params.desired_seconds == 0 && state->curr_q == -1) {
+    // in initial_samples
+    return 1;
+  }
+  
+  if (params.desired_seconds > 0) {
+    auto elapsed = std::chrono::system_clock::now() - state->start_time;
+    auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+    
+    return milliseconds - 1;
+  }
+  
+  if (params.desired_spp > 0) {
+    auto img_size = state->render.size().x * state->render.size().y;
+    auto image_spp = double(state->sample_count) / double(img_size);
+    return int(image_spp * 1000) - 1;
+  }
+    
+  if (state->curr_q == 0) {
+    return 2;
+  }
+  
+  if (state->curr_q > 0) {
+    return (state->curr_q * 1000) - 1;
+  }
+  return 1;
+}
+
 img::image<vec4b> sample_density_img(const state* state, statistic& stat);
 img::image<vec4b> q_img(const state* state);
+img::image<vec4b> time_density_img(const state* state);
 void collect_statistics(statistic& stat, const state* state);
 
 void trace_start(state* state, const trc::scene* scene,
